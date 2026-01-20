@@ -1,0 +1,30 @@
+{
+  "network": {
+    "bandwidth_mbps": 10.0,
+    "base_rtt_ms": 40.0,
+    "queue_size_packets": 100,
+    "mtu_bytes": 1500
+  },
+  "tcp": {
+    "initial_cwnd": 10.0,
+    "initial_ssthresh": 64.0,
+    "min_cwnd": 1.0,
+    "min_ssthresh": 2.0,
+    "rtt_alpha": 0.125,
+    "rtt_beta": 0.25,
+    "rto_k": 4.0,
+    "min_rto_sec": 0.2,
+    "max_rto_sec": 60.0,
+    "dup_ack_threshold": 3
+  },
+  "wireless": {
+    "loss_rate": 0.02
+  },
+  "simulation": {
+    "duration_sec": 60.0,
+    "time_step_sec": 0.001,
+    "metrics_interval_sec": 0.1,
+    "progress_interval_sec": 10.0,
+    "random_seed": null
+  }
+}
