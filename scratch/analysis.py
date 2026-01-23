@@ -64,7 +64,12 @@ def compare_loss_rates(loss_rates: List[float] = None,
         results.append(result)
     
     if plot and results:
-        plot_loss_comparison(results, f"loss_comparison_{bandwidth_mbps}mbps.png")
+        # Ensure plots directory exists
+        import os
+        plots_dir = './plots'
+        os.makedirs(plots_dir, exist_ok=True)
+        plot_path = os.path.join(plots_dir, f"loss_comparison_{bandwidth_mbps}mbps.png")
+        plot_loss_comparison(results, plot_path)
     
     return results
 

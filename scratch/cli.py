@@ -52,8 +52,8 @@ def parse_args():
     out_group = parser.add_argument_group('Output Options')
     out_group.add_argument('--plot', action='store_true',
                            help='Generate result plots')
-    out_group.add_argument('--output', type=str, default='simulation_results.png',
-                           help='Output filename for plots')
+    out_group.add_argument('--output', type=str, default='plots/simulation_results.png',
+                           help='Output filename for plots (saved in plots/ folder)')
     out_group.add_argument('--quiet', action='store_true',
                            help='Suppress progress output')
     out_group.add_argument('--json', type=str, default=None,

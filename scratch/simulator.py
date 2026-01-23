@@ -537,6 +537,16 @@ class TCPSimulator:
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
         plt.tight_layout()
+        
+        # Ensure plots directory exists
+        import os
+        plots_dir = './plots'
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # If filename doesn't include path, save to plots folder
+        if os.path.dirname(filename) == '':
+            filename = os.path.join(plots_dir, filename)
+        
         plt.savefig(filename, dpi=150, bbox_inches='tight')
         print(f"\nPlot saved to {filename}")
         

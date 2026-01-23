@@ -292,6 +292,10 @@ def train_agent(
     
     # Plot training progress
     if throughput_callback.throughputs:
+        # Ensure plots directory exists
+        plots_dir = './plots'
+        os.makedirs(plots_dir, exist_ok=True)
+        
         plt.figure(figsize=(10, 5))
         plt.plot(throughput_callback.timesteps, throughput_callback.throughputs, 
                  'b-', linewidth=2, label='RL Agent')
@@ -302,8 +306,9 @@ def train_agent(
         plt.title('RL Agent Training Progress')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(save_path, f'{run_name}_training.png'), dpi=150)
-        print(f"📈 Training plot saved to: {save_path}/{run_name}_training.png")
+        plot_path = os.path.join(plots_dir, f'{run_name}_training.png')
+        plt.savefig(plot_path, dpi=150)
+        print(f"📈 Training plot saved to: {plot_path}")
         plt.close()
     
     training_info = {
@@ -500,8 +505,14 @@ def compare_across_loss_rates(
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('rl_vs_tcp_comparison.png', dpi=150)
-    print(f"\n📈 Comparison plot saved to: rl_vs_tcp_comparison.png")
+    
+    # Ensure plots directory exists
+    plots_dir = './plots'
+    os.makedirs(plots_dir, exist_ok=True)
+    plot_path = os.path.join(plots_dir, 'rl_vs_tcp_comparison.png')
+    
+    plt.savefig(plot_path, dpi=150)
+    print(f"\n📈 Comparison plot saved to: {plot_path}")
     plt.close()
     
     return results
