@@ -153,6 +153,9 @@ class RLTCPSimulator(TCPSimulator):
 # Gym Environment
 # =============================================================================
 
+
+#STATE SPACE
+#7 VARIABLES ON WHICH MODEL IS TRAINED
 class TCPWirelessEnv(gym.Env):
     """
     OpenAI Gymnasium environment for RL-based TCP congestion control.
@@ -255,14 +258,11 @@ class TCPWirelessEnv(gym.Env):
         networks because random loss shouldn't trigger backoff.
         """
         rl = self.rl_config
-        
-        # Primary: Throughput reward (strongly weighted)
-        # Use goodput = throughput * (1 - loss_rate) for "effective" throughput
+
         goodput_mbps = state['throughput_mbps'] * (1.0 - state['loss_rate'])
         throughput_ratio = goodput_mbps / rl.target_throughput_mbps
         
-        # Logarithmic scaling to encourage pushing for high throughput
-        # This gives higher reward for going from 5->10 Mbps than from 0->5 Mbps
+        #THROUGHPUT REWARD
         if throughput_ratio > 0:
             throughput_reward = rl.throughput_weight * (
                 np.log1p(throughput_ratio * 5) / np.log1p(5)  # Normalized log scale
@@ -270,13 +270,11 @@ class TCPWirelessEnv(gym.Env):
         else:
             throughput_reward = -0.5  # Penalty for zero throughput
         
-        # Secondary: Latency penalty (only penalize very high latency)
-        # Allow up to 2x target RTT before any penalty kicks in
+        #LATENCY PENALTY
         latency_ratio = state['avg_rtt_ms'] / rl.target_rtt_ms
         latency_penalty = rl.latency_weight * max(0, (latency_ratio - 2.0) ** 2)
         
-        # Tertiary: Congestion penalty (based on queue buildup, not loss)
-        # Wireless loss is OK, but queue buildup means real congestion
+        #CONGESTION PENALTY - BASED ON QUEING AND NOT PACKET LOSS
         queue_occ = state['queue_occupancy'] / self.network_config.queue_size_packets
         congestion_penalty = 0.05 * max(0, queue_occ - 0.5) ** 2
         
