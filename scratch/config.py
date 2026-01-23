@@ -54,12 +54,55 @@ class TCPConfig:
 
 @dataclass
 class WirelessConfig:
-    """Wireless channel configuration"""
-    loss_rate: float = 0.02            # Random packet loss probability (0.0 to 1.0)
+    """Wireless channel configuration using Gilbert-Elliott burst loss model.
+    
+    The Gilbert-Elliott model is a 2-state Markov chain:
+    - GOOD state: Low loss probability (good channel conditions)
+    - BAD state: High loss probability (interference, fading, etc.)
+    
+    This models realistic wireless behavior where losses occur in bursts
+    due to fading, interference, or temporary obstructions.
+    """
+    # Overall average loss rate (for compatibility)
+    loss_rate: float = 0.02            # Target average loss probability
+    
+    # Gilbert-Elliott model parameters
+    use_burst_loss: bool = True        # Enable burst loss model (vs simple Bernoulli)
+    
+    # State transition probabilities
+    p_good_to_bad: float = 0.02        # Probability of transitioning GOOD -> BAD
+    p_bad_to_good: float = 0.3         # Probability of transitioning BAD -> GOOD
+    
+    # Per-state loss probabilities  
+    loss_prob_good: float = 0.001      # Loss probability in GOOD state (rare)
+    loss_prob_bad: float = 0.25        # Loss probability in BAD state (bursty)
+    
+    # Average burst length = 1 / p_bad_to_good ≈ 3.3 packets
+    # Time in bad state fraction = p_good_to_bad / (p_good_to_bad + p_bad_to_good) ≈ 6.25%
+    # Effective loss rate ≈ 0.9375 * 0.001 + 0.0625 * 0.25 ≈ 1.7%
     
     def __post_init__(self):
         if not 0.0 <= self.loss_rate <= 1.0:
             raise ValueError(f"loss_rate must be in [0, 1], got {self.loss_rate}")
+        if not 0.0 <= self.p_good_to_bad <= 1.0:
+            raise ValueError(f"p_good_to_bad must be in [0, 1], got {self.p_good_to_bad}")
+        if not 0.0 <= self.p_bad_to_good <= 1.0:
+            raise ValueError(f"p_bad_to_good must be in [0, 1], got {self.p_bad_to_good}")
+    
+    @property
+    def avg_burst_length(self) -> float:
+        """Average number of packets in a burst (while in BAD state)"""
+        return 1.0 / self.p_bad_to_good if self.p_bad_to_good > 0 else float('inf')
+    
+    @property
+    def effective_loss_rate(self) -> float:
+        """Calculate the effective average loss rate from Gilbert-Elliott params"""
+        if not self.use_burst_loss:
+            return self.loss_rate
+        # Steady-state probability of being in BAD state
+        pi_bad = self.p_good_to_bad / (self.p_good_to_bad + self.p_bad_to_good)
+        pi_good = 1.0 - pi_bad
+        return pi_good * self.loss_prob_good + pi_bad * self.loss_prob_bad
 
 
 @dataclass

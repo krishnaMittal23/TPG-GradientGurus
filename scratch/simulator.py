@@ -75,6 +75,13 @@ class TCPSimulator:
         self._duration = config.simulation.duration_sec
         self._time_step = config.simulation.time_step_sec
         
+        # Gilbert-Elliott burst loss model parameters
+        self._use_burst_loss = config.wireless.use_burst_loss
+        self._p_good_to_bad = config.wireless.p_good_to_bad
+        self._p_bad_to_good = config.wireless.p_bad_to_good
+        self._loss_prob_good = config.wireless.loss_prob_good
+        self._loss_prob_bad = config.wireless.loss_prob_bad
+        
         # Initialize state
         self._reset_state()
     
@@ -111,6 +118,11 @@ class TCPSimulator:
         self.retransmissions = 0
         self.timeouts = 0
         
+        # Gilbert-Elliott channel state (True = GOOD, False = BAD)
+        self.channel_state_good = True
+        self.burst_loss_count = 0  # Track consecutive losses in current burst
+        self.total_bursts = 0      # Number of burst events
+        
         # History for plotting
         self.throughput_history: List[Tuple[float, float]] = []
         self.cwnd_history: List[Tuple[float, float]] = []
@@ -118,6 +130,54 @@ class TCPSimulator:
         self.queue_history: List[Tuple[float, int]] = []
         self.loss_events: List[float] = []  # Timestamps of loss events
         
+    def _simulate_wireless_loss(self) -> bool:
+        """
+        Simulate wireless packet loss using Gilbert-Elliott model.
+        
+        Gilbert-Elliott is a 2-state Markov chain that models bursty loss:
+        - GOOD state: Channel is clear, low loss probability
+        - BAD state: Interference/fading, high loss probability
+        
+        This is more realistic than simple Bernoulli (i.i.d.) loss because
+        wireless losses tend to be correlated - if one packet is lost due
+        to fading or interference, subsequent packets are likely to be lost too.
+        
+        Returns:
+            True if packet is lost, False if packet is delivered
+        """
+        if not self._use_burst_loss:
+            # Fallback to simple Bernoulli loss for backward compatibility
+            return random.random() < self._loss_rate
+        
+        # Gilbert-Elliott state machine
+        was_good = self.channel_state_good
+        
+        # State transition based on current state
+        if self.channel_state_good:
+            # Currently in GOOD state - might transition to BAD
+            if random.random() < self._p_good_to_bad:
+                self.channel_state_good = False
+                self.total_bursts += 1  # Starting a new burst
+                self.burst_loss_count = 0
+        else:
+            # Currently in BAD state - might transition to GOOD
+            if random.random() < self._p_bad_to_good:
+                self.channel_state_good = True
+        
+        # Determine loss based on current state
+        if self.channel_state_good:
+            loss_prob = self._loss_prob_good
+        else:
+            loss_prob = self._loss_prob_bad
+        
+        packet_lost = random.random() < loss_prob
+        
+        # Track burst statistics
+        if packet_lost and not self.channel_state_good:
+            self.burst_loss_count += 1
+        
+        return packet_lost
+    
     def _get_queue_delay(self) -> float:
         """Calculate queuing delay based on queue occupancy"""
         packet_service_time = self._mtu / self._bandwidth
@@ -161,8 +221,10 @@ class TCPSimulator:
             self.packets_sent += 1
             self.bytes_sent += self._mtu
             
-            # Simulate wireless channel - random loss
-            if random.random() < self._loss_rate:
+            # Simulate wireless channel with Gilbert-Elliott burst loss model
+            packet_lost = self._simulate_wireless_loss()
+            
+            if packet_lost:
                 self.packets_lost_wireless += 1
                 # Packet is lost but TCP doesn't know yet!
                 # It will only find out when timeout occurs
@@ -395,6 +457,11 @@ class TCPSimulator:
             'wireless_loss_rate': self.packets_lost_wireless / packets_sent,
             'queue_loss_rate': self.packets_lost_queue / packets_sent,
             
+            # Burst loss metrics (Gilbert-Elliott model)
+            'burst_loss_enabled': self._use_burst_loss,
+            'total_burst_events': self.total_bursts,
+            'avg_burst_length': self.packets_lost_wireless / max(1, self.total_bursts),
+            
             # TCP behavior metrics
             'final_cwnd': self.cwnd,
             'final_ssthresh': self.ssthresh,
@@ -431,6 +498,8 @@ class TCPSimulator:
         
         print("\n❌ LOSSES:")
         print(f"   Wireless: {self.packets_lost_wireless:,} ({results['wireless_loss_rate']*100:.2f}%)")
+        if results['burst_loss_enabled']:
+            print(f"   └─ Burst events: {results['total_burst_events']} (avg {results['avg_burst_length']:.1f} pkts/burst)")
         print(f"   Queue:    {self.packets_lost_queue:,} ({results['queue_loss_rate']*100:.2f}%)")
         print(f"   Timeouts: {results['timeouts']}")
         
