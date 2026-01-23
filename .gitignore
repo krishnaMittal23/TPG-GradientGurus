@@ -48,5 +48,14 @@ vcpkg/
 
 .vs/
 
+# RL Training outputs
+models/
+logs/
+*.png
+*.zip
+*.json
+__pycache__/
+*.egg-info/
+
 # Ignore local cache used by e.g. clangd
 .cache/
