@@ -40,9 +40,14 @@ class RLConfig:
     loss_weight: float = 0.0            # NO penalty for loss (key for wireless!)
     stability_weight: float = 0.0       # Disabled - we want exploration
     
-    # Target values (for normalizing rewards)
-    target_throughput_mbps: float = 8.0    # Achievable target (80% of 10 Mbps)
-    target_rtt_ms: float = 150.0           # Lenient RTT target
+    # REMOVED: Fixed target_throughput_mbps - now uses capacity-relative metrics
+    # Capacity estimation settings (for time-varying networks)
+    capacity_ewma_alpha: float = 0.3    # EWMA smoothing for capacity estimation
+    capacity_estimation_window: int = 10  # Steps to track for peak detection
+    
+    # RTT-based congestion detection
+    target_rtt_multiplier: float = 1.5  # RTT > base_rtt * multiplier = congested
+    min_rtt_ewma_alpha: float = 0.1     # Slow tracking of minimum RTT
     
     # Action space bounds - direct cwnd control
     # Using wide range to allow agent to explore
@@ -58,6 +63,11 @@ class RLConfig:
     max_throughput_mbps: float = 15.0
     max_cwnd: float = 150.0
     max_in_flight: float = 150.0
+    
+    # Dynamic capacity simulation (for training robustness)
+    enable_dynamic_capacity: bool = True   # Enable time-varying capacity
+    capacity_variation_range: float = 0.3  # ±30% capacity variation
+    capacity_change_interval: int = 20     # Steps between capacity changes
 
 
 # =============================================================================
@@ -221,6 +231,13 @@ class TCPWirelessEnv(gym.Env):
         self.previous_state: Optional[Dict] = None
         self.episode_rewards: List[float] = []
         
+        # Capacity estimation state (for capacity-agnostic rewards)
+        self.estimated_capacity_mbps: float = 0.0  # EWMA of achievable throughput
+        self.peak_throughput_history: List[float] = []  # Recent peaks for capacity detection
+        self.min_rtt_estimate_ms: float = float('inf')  # Minimum observed RTT
+        self.current_capacity_scale: float = 1.0  # For dynamic capacity simulation
+        self.base_bandwidth_mbps: float = self.network_config.bandwidth_mbps
+        
     def _create_simulator(self) -> RLTCPSimulator:
         """Create a new simulator instance"""
         sim_config = SimulatorConfig(
@@ -249,40 +266,132 @@ class TCPWirelessEnv(gym.Env):
         
         return np.clip(obs, 0.0, 1.0)
     
-    def _calculate_reward(self, state: Dict) -> float:
+    def _update_capacity_estimate(self, state: Dict):
         """
-        Calculate reward based on current state.
+        Update running estimate of available network capacity.
         
-        Goal: Maximize throughput while keeping latency reasonable.
-        Key insight: We want the agent to be AGGRESSIVE with cwnd in wireless
-        networks because random loss shouldn't trigger backoff.
+        Uses multiple signals to estimate current capacity:
+        1. EWMA of achieved throughput (smoothed)
+        2. Peak throughput detection (recent maximum)
+        3. Minimum RTT tracking (baseline latency)
+        
+        This allows capacity-relative rewards without knowing true capacity.
         """
         rl = self.rl_config
-
-        goodput_mbps = state['throughput_mbps'] * (1.0 - state['loss_rate'])
-        throughput_ratio = goodput_mbps / rl.target_throughput_mbps
+        throughput = state['throughput_mbps']
+        rtt = state['avg_rtt_ms']
         
-        #THROUGHPUT REWARD
-        if throughput_ratio > 0:
+        # Track minimum RTT (approximates base propagation delay)
+        if rtt > 0 and rtt < self.min_rtt_estimate_ms:
+            # Slow adaptation to avoid noise
+            self.min_rtt_estimate_ms = (
+                (1 - rl.min_rtt_ewma_alpha) * self.min_rtt_estimate_ms + 
+                rl.min_rtt_ewma_alpha * rtt
+            ) if self.min_rtt_estimate_ms < float('inf') else rtt
+        
+        # Track peak throughput in sliding window
+        self.peak_throughput_history.append(throughput)
+        if len(self.peak_throughput_history) > rl.capacity_estimation_window:
+            self.peak_throughput_history.pop(0)
+        
+        # Estimate capacity as recent peak (what we CAN achieve)
+        recent_peak = max(self.peak_throughput_history) if self.peak_throughput_history else throughput
+        
+        # EWMA update of capacity estimate
+        if self.estimated_capacity_mbps <= 0:
+            self.estimated_capacity_mbps = throughput
+        else:
+            # Asymmetric update: faster increase, slower decrease
+            # This helps track capacity increases quickly while being robust to temporary dips
+            if throughput > self.estimated_capacity_mbps:
+                alpha = rl.capacity_ewma_alpha * 1.5  # Faster upward tracking
+            else:
+                alpha = rl.capacity_ewma_alpha * 0.5  # Slower downward tracking
+            
+            self.estimated_capacity_mbps = (
+                (1 - alpha) * self.estimated_capacity_mbps + 
+                alpha * recent_peak
+            )
+    
+    def _calculate_reward(self, state: Dict) -> float:
+        """
+        Calculate CAPACITY-AGNOSTIC reward based on current state.
+        
+        Key improvements over fixed-target reward:
+        1. Uses estimated capacity instead of hardcoded target
+        2. RTT-based congestion detection (works regardless of capacity)
+        3. Utilization relative to estimated available bandwidth
+        4. Robust to time-varying conditions (cross-traffic, fading, etc.)
+        
+        Goal: Maximize throughput relative to what's achievable, not a fixed target.
+        """
+        rl = self.rl_config
+        
+        # Update capacity estimate with current observation
+        self._update_capacity_estimate(state)
+        
+        throughput = state['throughput_mbps']
+        rtt = state['avg_rtt_ms']
+        loss_rate = state['loss_rate']
+        queue_occ = state['queue_occupancy'] / self.network_config.queue_size_packets
+        
+        # Goodput = throughput accounting for retransmissions
+        goodput_mbps = throughput * (1.0 - loss_rate)
+        
+        # === CAPACITY-RELATIVE THROUGHPUT REWARD ===
+        # Use estimated capacity instead of fixed target
+        # If we don't have a good estimate yet, use conservative baseline
+        effective_capacity = max(0.1, self.estimated_capacity_mbps)
+        utilization = goodput_mbps / effective_capacity
+        
+        # Reward scales with utilization (0 to 1+)
+        # Log scale rewards marginal gains while preventing runaway values
+        if utilization > 0:
             throughput_reward = rl.throughput_weight * (
-                np.log1p(throughput_ratio * 5) / np.log1p(5)  # Normalized log scale
+                np.log1p(utilization * 3) / np.log1p(3)  # Normalized to ~1.0 at full utilization
             )
         else:
             throughput_reward = -0.5  # Penalty for zero throughput
         
-        #LATENCY PENALTY
-        latency_ratio = state['avg_rtt_ms'] / rl.target_rtt_ms
-        latency_penalty = rl.latency_weight * max(0, (latency_ratio - 2.0) ** 2)
+        # === RTT-BASED CONGESTION DETECTION ===
+        # Compare current RTT to estimated minimum RTT
+        # This works regardless of absolute capacity
+        if self.min_rtt_estimate_ms > 0 and self.min_rtt_estimate_ms < float('inf'):
+            rtt_inflation = rtt / self.min_rtt_estimate_ms
+            # Penalize when RTT exceeds threshold (indicates queuing/congestion)
+            if rtt_inflation > rl.target_rtt_multiplier:
+                latency_penalty = rl.latency_weight * (rtt_inflation - rl.target_rtt_multiplier) ** 2
+            else:
+                latency_penalty = 0.0
+        else:
+            # Fallback: use absolute RTT threshold
+            latency_penalty = rl.latency_weight * max(0, (rtt / 100.0 - 2.0) ** 2)
         
-        #CONGESTION PENALTY - BASED ON QUEING AND NOT PACKET LOSS
-        queue_occ = state['queue_occupancy'] / self.network_config.queue_size_packets
+        # === QUEUE-BASED CONGESTION PENALTY ===
+        # Penalize high queue occupancy (true congestion signal)
         congestion_penalty = 0.05 * max(0, queue_occ - 0.5) ** 2
         
-        # Bonus for high utilization (>50% of bandwidth)
-        utilization = state['throughput_mbps'] / self.network_config.bandwidth_mbps
-        utilization_bonus = 0.1 * max(0, utilization - 0.5)
+        # === UTILIZATION IMPROVEMENT BONUS ===
+        # Bonus for exceeding 70% of estimated capacity (encourages exploration)
+        if utilization > 0.7:
+            utilization_bonus = 0.15 * (utilization - 0.7)
+        else:
+            utilization_bonus = 0.0
         
-        reward = throughput_reward - latency_penalty - congestion_penalty + utilization_bonus
+        # === CAPACITY DISCOVERY BONUS ===
+        # Small bonus for discovering higher capacity (encourages probing)
+        if throughput > self.estimated_capacity_mbps * 0.95:
+            discovery_bonus = 0.1
+        else:
+            discovery_bonus = 0.0
+        
+        reward = (
+            throughput_reward 
+            - latency_penalty 
+            - congestion_penalty 
+            + utilization_bonus 
+            + discovery_bonus
+        )
         
         return float(reward)
     
@@ -306,6 +415,22 @@ class TCPWirelessEnv(gym.Env):
         # Allow varying loss rate via options
         if options and 'loss_rate' in options:
             self.wireless_config.loss_rate = options['loss_rate']
+        
+        # Reset capacity estimation state
+        self.estimated_capacity_mbps = 0.0
+        self.peak_throughput_history = []
+        self.min_rtt_estimate_ms = float('inf')
+        
+        # Simulate dynamic capacity (time-varying network conditions)
+        if self.rl_config.enable_dynamic_capacity:
+            # Random capacity scaling for this episode
+            # Simulates: wireless rate adaptation, cross-traffic, fading, cellular scheduling
+            variation = self.rl_config.capacity_variation_range
+            self.current_capacity_scale = 1.0 + np.random.uniform(-variation, variation)
+            self.network_config.bandwidth_mbps = self.base_bandwidth_mbps * self.current_capacity_scale
+        else:
+            self.current_capacity_scale = 1.0
+            self.network_config.bandwidth_mbps = self.base_bandwidth_mbps
         
         # Create fresh simulator
         self.simulator = self._create_simulator()
@@ -351,6 +476,22 @@ class TCPWirelessEnv(gym.Env):
         # Apply action: set cwnd directly
         self.simulator.set_cwnd_override(new_cwnd)
         
+        # Simulate intra-episode capacity changes (time-varying network)
+        if (self.rl_config.enable_dynamic_capacity and 
+            self.current_step > 0 and 
+            self.current_step % self.rl_config.capacity_change_interval == 0):
+            # Gradual capacity shift (not abrupt, more realistic)
+            variation = self.rl_config.capacity_variation_range * 0.5  # Smaller intra-episode changes
+            delta = np.random.uniform(-variation, variation)
+            self.current_capacity_scale = np.clip(
+                self.current_capacity_scale + delta,
+                1.0 - self.rl_config.capacity_variation_range,
+                1.0 + self.rl_config.capacity_variation_range
+            )
+            self.network_config.bandwidth_mbps = self.base_bandwidth_mbps * self.current_capacity_scale
+            # Update simulator's bandwidth (affects queuing model)
+            self.simulator._bandwidth = self.network_config.bandwidth_mbps * 1e6 / 8
+        
         # Run simulation step
         state = self.simulator.step_simulation(self.rl_config.step_duration_sec)
         self.current_step += 1
@@ -371,6 +512,11 @@ class TCPWirelessEnv(gym.Env):
             'raw_state': state,
             'action_cwnd': new_cwnd,
             'episode_reward_sum': sum(self.episode_rewards),
+            # Capacity estimation debug info
+            'estimated_capacity_mbps': self.estimated_capacity_mbps,
+            'current_capacity_scale': self.current_capacity_scale,
+            'min_rtt_estimate_ms': self.min_rtt_estimate_ms,
+            'actual_bandwidth_mbps': self.network_config.bandwidth_mbps,
         }
         
         self.previous_state = state
