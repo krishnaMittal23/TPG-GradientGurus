@@ -50,6 +50,7 @@ vcpkg/
 
 # RL Training outputs
 models/
+plots/
 logs/
 *.png
 *.zip

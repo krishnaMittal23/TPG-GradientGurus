@@ -173,6 +173,7 @@ def train_agent(
     
     # Evaluate baseline first
     print("\n📊 Evaluating baseline TCP...")
+    print(f"   Using loss_rate={loss_rate} ({loss_rate*100:.1f}%)")
     baseline = evaluate_baseline_tcp(eval_env, num_episodes=3)
     print(f"   Baseline throughput: {baseline['avg_throughput']:.2f} Mbps")
     print(f"   Baseline RTT: {baseline['avg_rtt']:.2f} ms")
@@ -354,13 +355,19 @@ def evaluate_agent(
     print("=" * 60)
     print(" Evaluating Trained Agent")
     print("=" * 60)
+    print(f"   Loss Rate: {loss_rate} ({loss_rate*100:.1f}%)")
+    print(f"   Bandwidth: {bandwidth_mbps} Mbps")
+    print(f"   RTT: {rtt_ms} ms")
+    print(f"   Episodes: {n_episodes}")
+    print("=" * 60)
     
     # Load model
     model = PPO.load(model_path)
     print(f"Loaded model from: {model_path}")
     
-    # Create environment
+    # Create environment with specified loss rate
     env = make_env(loss_rate, bandwidth_mbps, rtt_ms)
+    print(f"Environment created with loss_rate={loss_rate}")
     
     # Evaluate baseline
     print("\n📊 Baseline TCP Performance...")

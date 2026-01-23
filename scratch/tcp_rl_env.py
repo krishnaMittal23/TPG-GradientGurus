@@ -239,13 +239,17 @@ class TCPWirelessEnv(gym.Env):
         self.base_bandwidth_mbps: float = self.network_config.bandwidth_mbps
         
     def _create_simulator(self) -> RLTCPSimulator:
-        """Create a new simulator instance"""
+        """Create a new simulator instance with fresh random state"""
+        # Generate a truly random seed for this episode
+        import time
+        random_seed = int(time.time() * 1000000) % (2**31) + np.random.randint(0, 1000000)
+        
         sim_config = SimulatorConfig(
             network=self.network_config,
             wireless=self.wireless_config,
             simulation=SimulationConfig(
                 duration_sec=self.rl_config.steps_per_episode * self.rl_config.step_duration_sec,
-                random_seed=None  # Random each episode
+                random_seed=random_seed  # Fresh random seed each episode
             )
         )
         return RLTCPSimulator(config=sim_config)
@@ -589,9 +593,12 @@ def evaluate_baseline_tcp(env: TCPWirelessEnv,
     Returns:
         Dictionary of average metrics
     """
+    # Log the environment's loss rate
+    print(f"   evaluate_baseline_tcp: env.wireless_config.loss_rate = {env.wireless_config.loss_rate}")
+    
     results = []
     
-    for _ in range(num_episodes):
+    for ep in range(num_episodes):
         obs, info = env.reset()
         episode_throughput = []
         episode_rtt = []
@@ -611,11 +618,16 @@ def evaluate_baseline_tcp(env: TCPWirelessEnv,
             if env.simulator.is_done() or env.current_step >= env.rl_config.steps_per_episode:
                 break
         
+        ep_avg = np.mean(episode_throughput)
         results.append({
-            'throughput': np.mean(episode_throughput),
+            'throughput': ep_avg,
             'rtt': np.mean(episode_rtt),
             'total_reward': 0  # Not applicable for baseline
         })
+        print(f"   Episode {ep+1}: Baseline throughput = {ep_avg:.2f} Mbps")
+    
+    avg_throughput = np.mean([r['throughput'] for r in results])
+    print(f"   Average baseline throughput: {avg_throughput:.2f} Mbps")
     
     return {
         'avg_throughput': np.mean([r['throughput'] for r in results]),
