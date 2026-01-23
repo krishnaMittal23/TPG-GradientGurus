@@ -1,0 +1,62 @@
+
+=================================================================
+EDA RECOMMENDATIONS FOR RL-BASED TCP CONGESTION CONTROL
+=================================================================
+
+KEY FINDINGS:
+
+1. THROUGHPUT WEIGHT MULTIPLIER:
+   ✓ RECOMMENDED: 2.0x (default choice justified)
+   - Provides optimal balance in reward scaling
+   - Prevents reward explosion with higher multipliers
+   - Enables stable learning convergence
+
+   Why NOT 3x or 4x?
+   - 3x: Overly aggressive, may cause instability
+   - 4x: Risk of reward saturation, poor exploration
+   - 2x: Sweet spot for stable, consistent performance
+
+2. LATENCY WEIGHT:
+   ✓ RECOMMENDED: 0.05 (minimal latency penalty)
+   - Wireless networks prioritize throughput over latency
+   - Too high latency weight conflicts with throughput goal
+   - 0.05 allows latency optimization without sacrificing throughput
+
+3. LOSS WEIGHT:
+   ✓ RECOMMENDED: 0.0 (no penalty for wireless loss)
+   - KEY INSIGHT: Don't penalize agent for wireless losses
+   - RL should learn to handle wireless loss differently from congestion
+   - Loss weight > 0 prevents agent from distinguishing wireless vs congestion loss
+
+4. NETWORK PARAMETERS:
+   ✓ BANDWIDTH: Test across 5-50 Mbps ranges
+   ✓ RTT: Test across 10-200 ms for different network conditions
+   ✓ QUEUE SIZE: 100 packets provides good buffering
+   ✓ WIRELESS LOSS: Test 0.0-0.20 to evaluate RL robustness
+
+CONFIGURATION RECOMMENDATIONS:
+================================================
+reward_config = RLConfig(
+    throughput_weight=2.0,    # Optimal multiplier
+    latency_weight=0.05,      # Minimal penalty
+    loss_weight=0.0,          # No wireless loss penalty
+    stability_weight=0.0      # Allow exploration
+)
+
+network_config = NetworkConfig(
+    bandwidth_mbps=10.0,      # Typical wireless link
+    base_rtt_ms=40.0,         # Typical wireless RTT
+    queue_size_packets=100,   # Good buffering
+    mtu_bytes=1500
+)
+
+wireless_config = WirelessConfig(
+    loss_rate=0.02            # 2% typical wireless loss
+)
+================================================
+
+NEXT STEPS:
+1. Use these parameters for RL training
+2. Monitor convergence speed vs default values
+3. Test on other loss rates (0.01, 0.05, 0.10) for robustness
+4. Compare trained agent vs standard TCP across scenarios
